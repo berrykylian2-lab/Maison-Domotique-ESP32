@@ -1,0 +1,664 @@
+
+name: Windows CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+  push:
+    branches:
+      - main
+
+  schedule:
+    - cron: '2-57/5 * * * *'
+    - cron: '4,19,34,49 * * * *'
+    - cron: '11 * * * *'
+    - cron: '23 */6 * * *'
+
+  release:
+    types:
+      - published
+
+  workflow_call:
+    inputs:
+      force_full:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}-${{ github.event_name }}-${{ github.event.schedule || 'event' }}
+  cancel-in-progress: false
+
+env:
+  MAX_ATTEMPTS: '3'
+  WATCHDOG_INTERVAL_SECONDS: '5'
+  MCP_TIMEOUT_SECONDS: '60'
+  PROCESS_TIMEOUT_SECONDS: '600'
+  REPORT_RETENTION_DAYS: '90'
+
+jobs:
+
+  monitor:
+    name: Continuous monitoring
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      snapshot: ${{ steps.compare.outputs.snapshot }}
+
+    env:
+      FULL_SCAN: ${{ inputs.force_full == true || github.event_name != 'schedule' || github.event.schedule != '2-57/5 * * * *' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore validated version history
+        if: env.FULL_SCAN == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/windows-ci-state/validated.json
+          key: windows-validated-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            windows-validated-v1-
+
+      - name: Health check and dependency discovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/ci-reports"
+
+          mode="health"
+
+          if [ "$FULL_SCAN" = "true" ]; then
+            mode="versions"
+          fi
+
+          python3 scripts/ci/monitor.py \
+            --mode "$mode" \
+            --attempts "$MAX_ATTEMPTS" \
+            --timeout 10 \
+            --output "$RUNNER_TEMP/candidate.json" \
+            --report "$RUNNER_TEMP/ci-reports/monitoring.json"
+
+      - name: Compare dependency versions
+        id: compare
+        if: env.FULL_SCAN == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+
+          candidate = root / "candidate.json"
+          history = root / "windows-ci-state" / "validated.json"
+
+          current = json.loads(candidate.read_text())
+
+          required = {
+              "Blender", "Codex", "MCP",
+              "Git", "UV", "NodeJS"
+          }
+
+          if not isinstance(current, dict):
+              raise RuntimeError("Invalid candidate snapshot")
+
+          if set(current) != required:
+              raise RuntimeError("Dependency list mismatch")
+
+          if not all(
+              isinstance(v, str) and v.strip()
+              for v in current.values()
+          ):
+              raise RuntimeError("Invalid dependency versions")
+
+          previous = (
+              json.loads(history.read_text())
+              if history.exists()
+              else {}
+          )
+
+          changed = current != previous
+
+          snapshot = json.dumps(
+              current,
+              sort_keys=True,
+              separators=(",", ":")
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"changed={str(changed).lower()}\n")
+              output.write(f"snapshot={snapshot}\n")
+
+          print(f"Dependency changes detected: {changed}")
+          PY
+
+      - name: Monitoring summary
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Continuous monitoring"
+            echo "- Status: $JOB_STATUS"
+            echo "- Date UTC: $(date -u +'%Y-%m-%d %H:%M:%S')"
+            echo "- Full scan: $FULL_SCAN"
+            echo "- Maximum attempts: $MAX_ATTEMPTS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload monitoring report
+        if: ${{ always() && (failure() || env.FULL_SCAN == 'true') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports
+          retention-days: 90
+          if-no-files-found: warn
+
+
+  validate:
+    name: Validation - ${{ matrix.shell }}
+    runs-on: windows-2025
+    timeout-minutes: 5
+
+    needs: monitor
+
+    if: >-
+      ${{
+        !cancelled() &&
+        (
+          inputs.force_full == true ||
+          github.event_name != 'schedule' ||
+          github.event.schedule == '11 * * * *' ||
+          github.event.schedule == '23 */6 * * *' ||
+          (
+            needs.monitor.result == 'success' &&
+            needs.monitor.outputs.changed == 'true'
+          )
+        )
+      }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shell:
+          - powershell
+          - pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Display PowerShell version
+        shell: ${{ matrix.shell }}
+        run: |
+          $PSVersionTable
+
+      - name: Verify repository integrity
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = @(
+              "scripts/install-windows.ps1",
+              "Lancer-Windows.bat",
+              "README.md",
+              "scripts/ci/monitor.py",
+              "scripts/ci/Initialize-CiTools.ps1",
+              "scripts/ci/Invoke-SecurityScan.ps1",
+              "scripts/ci/Invoke-DeploymentTests.ps1",
+              "ci/tools.lock.json",
+              "tests/unit/Installer.Tests.ps1",
+              "tests/integration/Deployment.Tests.ps1",
+              ".github/workflows/windows-ci.yml"
+          )
+
+          foreach ($file in $files) {
+              if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                  throw "Missing file: $file"
+              }
+
+              if ((Get-Item -LiteralPath $file).Length -eq 0) {
+                  throw "Empty file: $file"
+              }
+
+              Write-Host "Verified: $file"
+          }
+
+      - name: Validate PowerShell syntax
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = Get-ChildItem scripts,tests -Recurse -File |
+              Where-Object {
+                  $_.Extension -in ".ps1", ".psm1", ".psd1"
+              }
+
+          $errorCount = 0
+
+          foreach ($file in $files) {
+              $tokens = $null
+              $parseErrors = $null
+
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $file.FullName,
+                  [ref]$tokens,
+                  [ref]$parseErrors
+              ) | Out-Null
+
+              foreach ($errorItem in $parseErrors) {
+                  Write-Host "$($file.FullName): $($errorItem.Message)"
+                  $errorCount++
+              }
+          }
+
+          if ($errorCount -gt 0) {
+              throw "Syntax errors: $errorCount"
+          }
+
+      - name: Restore testing tools cache
+        id: tools-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ci-modules
+          key: windows-2025-${{ matrix.shell }}-tools-${{ hashFiles('ci/tools.lock.json') }}
+
+      - name: Prepare and verify testing tools
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & ./scripts/ci/Initialize-CiTools.ps1 `
+            -ModulePath "$env:RUNNER_TEMP/ci-modules" `
+            -LockFile "ci/tools.lock.json"
+
+      - name: Analyze PowerShell code
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $reportDir = Join-Path $env:RUNNER_TEMP "ci-reports"
+
+          New-Item -ItemType Directory `
+            -Path $reportDir -Force | Out-Null
+
+          $modulePath = Join-Path $env:RUNNER_TEMP `
+            "ci-modules/PSScriptAnalyzer/1.24.0/PSScriptAnalyzer.psd1"
+
+          Import-Module $modulePath -Force
+
+          $results = @(
+              Invoke-ScriptAnalyzer -Path scripts -Recurse
+              Invoke-ScriptAnalyzer -Path tests -Recurse
+          )
+
+          $results | Format-List
+
+          $diagnostics = @(
+              $results | Select-Object `
+                RuleName, Severity, Message, ScriptName, Line, Column
+          )
+
+          ConvertTo-Json -InputObject $diagnostics -Depth 4 |
+              Set-Content `
+                (Join-Path $reportDir "static-analysis.json") `
+                -Encoding utf8
+
+          $errors = @($results | Where-Object {
+              $_.Severity -eq "Error"
+          })
+
+          $warnings = @($results | Where-Object {
+              $_.Severity -eq "Warning"
+          })
+
+          $information = @($results | Where-Object {
+              $_.Severity -eq "Information"
+          })
+
+          @(
+              "## Static analysis"
+              "- Errors: $($errors.Count)"
+              "- Warnings: $($warnings.Count)"
+              "- Information: $($information.Count)"
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+          if ($errors.Count -gt 0 -or $warnings.Count -gt 0) {
+              throw "Static analysis failed."
+          }
+
+      - name: Run unit tests
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $modulePath = Join-Path $env:RUNNER_TEMP `
+            "ci-modules/Pester/5.7.1/Pester.psd1"
+
+          Import-Module $modulePath -Force
+
+          $reportDir = Join-Path $env:RUNNER_TEMP "ci-reports"
+
+          New-Item -ItemType Directory `
+            -Path $reportDir -Force | Out-Null
+
+          $config = New-PesterConfiguration
+
+          $config.Run.Path = "tests/unit"
+          $config.Run.PassThru = $true
+          $config.Output.Verbosity = "Detailed"
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = Join-Path $reportDir "unit-tests.xml"
+
+          $result = Invoke-Pester -Configuration $config
+
+          @(
+              "## Unit tests"
+              "- Total: $($result.TotalCount)"
+              "- Passed: $($result.PassedCount)"
+              "- Failed: $($result.FailedCount)"
+              "- Skipped: $($result.SkippedCount)"
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+          if (
+              $result.Result -ne "Passed" -or
+              $result.TotalCount -eq 0 -or
+              $result.PassedCount -ne $result.TotalCount
+          ) {
+              throw "Unit tests failed or incomplete."
+          }
+
+      - name: Security scan
+        if: matrix.shell == 'pwsh' && needs.monitor.result == 'success'
+        shell: pwsh
+        env:
+          CANDIDATE_VERSIONS_JSON: ${{ needs.monitor.outputs.snapshot }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & ./scripts/ci/Invoke-SecurityScan.ps1 `
+            -CandidateJson $env:CANDIDATE_VERSIONS_JSON `
+            -ReportDirectory "$env:RUNNER_TEMP/ci-reports"
+
+      - name: Save verified tools cache
+        if: >-
+          success() &&
+          github.ref == 'refs/heads/main' &&
+          steps.tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ci-modules
+          key: windows-2025-${{ matrix.shell }}-tools-${{ hashFiles('ci/tools.lock.json') }}
+
+      - name: Generate validation status report
+        if: always()
+        shell: ${{ matrix.shell }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          $reportDir = Join-Path $env:RUNNER_TEMP "ci-reports"
+
+          New-Item -ItemType Directory `
+            -Path $reportDir -Force | Out-Null
+
+          $report = [ordered]@{
+              status = $env:JOB_STATUS
+              timestampUtc = [DateTime]::UtcNow.ToString("o")
+              powershellVersion = $PSVersionTable.PSVersion.ToString()
+              runId = $env:GITHUB_RUN_ID
+              commit = $env:GITHUB_SHA
+              runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          }
+
+          $report | ConvertTo-Json |
+              Set-Content `
+                (Join-Path $reportDir "validation-status.json") `
+                -Encoding utf8
+
+          @(
+              "## Validation status"
+              "- PowerShell: $($report.powershellVersion)"
+              "- Status: $($report.status)"
+              "- UTC: $($report.timestampUtc)"
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.shell }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports
+          retention-days: 90
+          if-no-files-found: warn
+
+
+  integration:
+    name: Integration and Zero-Click
+    runs-on: windows-2025
+    timeout-minutes: 15
+
+    needs:
+      - monitor
+      - validate
+
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.monitor.result == 'success' &&
+        needs.validate.result == 'success' &&
+        (
+          inputs.force_full == true ||
+          github.event_name != 'schedule' ||
+          github.event.schedule == '23 */6 * * *' ||
+          needs.monitor.outputs.changed == 'true'
+        )
+      }}
+
+    concurrency:
+      group: windows-deployment-test-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore testing tools
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ci-modules
+          key: windows-2025-powershell-tools-${{ hashFiles('ci/tools.lock.json') }}
+
+      - name: Prepare verified testing tools
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & ./scripts/ci/Initialize-CiTools.ps1 `
+            -ModulePath "$env:RUNNER_TEMP/ci-modules" `
+            -LockFile "ci/tools.lock.json"
+
+      - name: Deployment, watchdog and recovery tests
+        shell: powershell
+        env:
+          CANDIDATE_VERSIONS_JSON: ${{ needs.monitor.outputs.snapshot }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $timer = [System.Diagnostics.Stopwatch]::StartNew()
+
+          $reportDir = Join-Path $env:RUNNER_TEMP "ci-reports"
+
+          New-Item -ItemType Directory `
+            -Path $reportDir -Force | Out-Null
+
+          try {
+              & ./scripts/ci/Invoke-DeploymentTests.ps1 `
+                -CandidateJson $env:CANDIDATE_VERSIONS_JSON `
+                -ModulePath "$env:RUNNER_TEMP/ci-modules" `
+                -ReportDirectory $reportDir `
+                -MaxAttempts ([int]$env:MAX_ATTEMPTS) `
+                -WatchdogIntervalSeconds ([int]$env:WATCHDOG_INTERVAL_SECONDS) `
+                -McpTimeoutSeconds ([int]$env:MCP_TIMEOUT_SECONDS) `
+                -ProcessTimeoutSeconds ([int]$env:PROCESS_TIMEOUT_SECONDS)
+
+              $requiredReports = @(
+                  "verified-versions.json",
+                  "watchdog.json",
+                  "deployment.json",
+                  "integration-tests.xml"
+              )
+
+              foreach ($file in $requiredReports) {
+                  $path = Join-Path $reportDir $file
+
+                  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                      throw "Required report missing: $file"
+                  }
+
+                  if ((Get-Item -LiteralPath $path).Length -eq 0) {
+                      throw "Empty report: $file"
+                  }
+              }
+
+              $expected = $env:CANDIDATE_VERSIONS_JSON |
+                  ConvertFrom-Json
+
+              $actual = Get-Content `
+                  (Join-Path $reportDir "verified-versions.json") `
+                  -Raw | ConvertFrom-Json
+
+              $expectedKeys = @($expected.PSObject.Properties.Name)
+              $actualKeys = @($actual.PSObject.Properties.Name)
+
+              if (Compare-Object $expectedKeys $actualKeys) {
+                  throw "Dependency list mismatch."
+              }
+
+              foreach ($key in $expectedKeys) {
+                  if ($expected.$key -cne $actual.$key) {
+                      throw "Version mismatch: $key"
+                  }
+              }
+          }
+          finally {
+              $timer.Stop()
+
+              @{
+                  durationSeconds = $timer.Elapsed.TotalSeconds
+                  timestampUtc = [DateTime]::UtcNow.ToString("o")
+              } | ConvertTo-Json |
+                  Set-Content `
+                    (Join-Path $reportDir "performance.json") `
+                    -Encoding utf8
+          }
+
+      - name: Generate integration status report
+        if: always()
+        shell: powershell
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          $reportDir = Join-Path $env:RUNNER_TEMP "ci-reports"
+
+          New-Item -ItemType Directory `
+            -Path $reportDir -Force | Out-Null
+
+          $report = [ordered]@{
+              status = $env:JOB_STATUS
+              timestampUtc = [DateTime]::UtcNow.ToString("o")
+              runId = $env:GITHUB_RUN_ID
+              commit = $env:GITHUB_SHA
+              runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          }
+
+          $report | ConvertTo-Json |
+              Set-Content `
+                (Join-Path $reportDir "integration-status.json") `
+                -Encoding utf8
+
+          @(
+              "## Integration and Zero-Click"
+              "- Status: $($report.status)"
+              "- UTC: $($report.timestampUtc)"
+              "- Watchdog interval: $env:WATCHDOG_INTERVAL_SECONDS seconds"
+              "- MCP timeout: $env:MCP_TIMEOUT_SECONDS seconds"
+              "- Maximum attempts: $env:MAX_ATTEMPTS"
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload integration reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reports
+          retention-days: 90
+          if-no-files-found: warn
+
+
+  remember_versions:
+    name: Remember validated versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+
+    needs:
+      - monitor
+      - integration
+
+    if: >-
+      ${{
+        !cancelled() &&
+        github.ref == 'refs/heads/main' &&
+        (
+          github.event_name == 'schedule' ||
+          github.event_name == 'push'
+        ) &&
+        needs.monitor.outputs.changed == 'true' &&
+        needs.integration.result == 'success'
+      }}
+
+    steps:
+      - name: Prepare validated version history
+        shell: bash
+        env:
+          VERSION_SNAPSHOT: ${{ needs.monitor.outputs.snapshot }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/windows-ci-state"
+
+          printf '%s' "$VERSION_SNAPSHOT" \
+            > "$RUNNER_TEMP/windows-ci-state/validated.json"
+
+      - name: Save validated version history
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/windows-ci-state/validated.json
+          key: windows-validated-v1-${{ github.run_id }}-${{ github.run_attempt }}
