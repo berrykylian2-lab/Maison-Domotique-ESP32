@@ -33,7 +33,7 @@ Describe "Windows installer unit tests" {
 
         $requiredFunctions = @(
             "Note",
-            "Update-Path",
+            "Initialize-ProcessPath",
             "Find-Exe",
             "Invoke-Checked",
             "Install-WinGetPackage",
@@ -173,7 +173,7 @@ Describe "Windows installer unit tests" {
 
                 $env:Path = "$testPath;$originalPath"
 
-                Update-Path
+                Initialize-ProcessPath
 
                 ($env:Path -split ";") |
                     Should -Contain $testPath
@@ -194,7 +194,7 @@ Describe "Windows installer unit tests" {
 
                 $env:Path = "$testPath;$testPath"
 
-                Update-Path
+                Initialize-ProcessPath
 
                 $entries = @(
                     $env:Path -split ";" |
@@ -240,7 +240,7 @@ Describe "Windows installer unit tests" {
 
             Mock Note {}
 
-            Mock Update-Path {}
+            Mock Initialize-ProcessPath {}
 
             Mock Invoke-Checked {}
         }
@@ -276,7 +276,7 @@ Describe "Windows installer unit tests" {
 
             Install-WinGetPackage "Git.Git"
 
-            Should -Invoke Update-Path `
+            Should -Invoke Initialize-ProcessPath `
                 -Exactly `
                 -Times 1 `
                 -Scope It
@@ -310,7 +310,7 @@ Describe "Windows installer unit tests" {
                 Install-WinGetPackage "Git.Git"
             } | Should -Throw "*Simulated installation failure*"
 
-            Should -Invoke Update-Path `
+            Should -Invoke Initialize-ProcessPath `
                 -Exactly `
                 -Times 0 `
                 -Scope It

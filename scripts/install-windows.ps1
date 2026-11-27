@@ -8,7 +8,7 @@ function Note([string]$message) {
     Write-Information -MessageData $message -InformationAction Continue
     Add-Content -LiteralPath $log -Value ("{0:u} {1}" -f (Get-Date), $message)
 }
-function Update-Path {
+function Initialize-ProcessPath {
     $paths = @($env:Path, [Environment]::GetEnvironmentVariable('Path','Machine'),
         [Environment]::GetEnvironmentVariable('Path','User'),
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links", "$HOME\.local\bin",
@@ -28,7 +28,7 @@ function Install-WinGetPackage([string]$id) {
     if (-not $winget) { throw "WinGet absent. Demander son installation autorisee." }
     Note "Installation : $id"
     Invoke-Checked $winget @('install','--id',$id,'--exact','--source','winget')
-    Update-Path
+    Initialize-ProcessPath
 }
 function Initialize-Executable([string]$name,[string]$id) {
     if (-not (Find-Exe $name)) { Install-WinGetPackage $id }
@@ -53,7 +53,7 @@ function Find-Desktop {
 }
 try {
     Note '=== Installation Windows (v0.1, prototype) ==='
-    Update-Path
+    Initialize-ProcessPath
     $blender = Find-Blender
     if (-not $blender) { Install-WinGetPackage 'BlenderFoundation.Blender'; $blender = Find-Blender }
     if (-not $blender) { throw 'Blender introuvable apres installation.' }
@@ -73,7 +73,7 @@ try {
         # CLI fallback when the desktop application is absent.
         Initialize-Executable 'npm.cmd' 'OpenJS.NodeJS.LTS'
         Invoke-Checked (Find-Exe 'npm.cmd') @('install','-g','@openai/codex')
-        Update-Path
+        Initialize-ProcessPath
         $codex = Find-Exe 'codex.exe'
         if (-not $codex) { $codex = Find-Exe 'codex.cmd' }
         if (-not $codex) { throw 'Codex CLI introuvable apres installation.' }
