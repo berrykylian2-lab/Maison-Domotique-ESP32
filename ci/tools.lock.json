@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "repository": {
+    "name": "PSGallery",
+    "url": "https://www.powershellgallery.com/api/v2"
+  },
+  "policy": {
+    "exactVersions": true,
+    "allowPrerelease": false,
+    "allowUnlistedModules": false,
+    "autoUpgrade": false,
+    "failOnVersionMismatch": true
+  },
+  "modules": [
+    {
+      "name": "PSScriptAnalyzer",
+      "version": "1.24.0",
+      "publisher": "Microsoft Corporation",
+      "purpose": "Static analysis",
+      "required": true
+    },
+    {
+      "name": "Pester",
+      "version": "5.7.1",
+      "publisher": "Pester Team",
+      "purpose": "Unit and integration testing",
+      "required": true
+    }
+  ]
+}
