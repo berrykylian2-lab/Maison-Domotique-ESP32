@@ -100,7 +100,7 @@ function Get-CiAdvisoryPage {
 }
 
 
-function Get-CiAdvisories {
+function Get-CiAdvisory {
     param(
         [string]$Ecosystem,
         [string]$Package,
@@ -322,7 +322,7 @@ try {
 
             try {
                 $advisories = @(
-                    Get-CiAdvisories `
+                    Get-CiAdvisory `
                         -Ecosystem $target.ecosystem `
                         -Package $package `
                         -Version $version `
