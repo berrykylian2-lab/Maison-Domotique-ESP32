@@ -112,6 +112,16 @@ function Invoke-CiProcess {
     $exitCode = $null
 
     try {
+        # Keep the native handle before a fast child exits.
+        $handle = $process.Handle
+
+        if (
+            $null -eq $handle -or
+            $handle -eq [IntPtr]::Zero
+        ) {
+            throw "Unable to retain the test process handle."
+        }
+
         while (-not $process.HasExited) {
 
             $remainingMs = [int][Math]::Max(
@@ -182,6 +192,18 @@ function Invoke-CiProcess {
         }
     }
 
+    $exitLabel = if ($null -eq $exitCode) {
+        "MISSING"
+    }
+    else {
+        [string]$exitCode
+    }
+
+    Write-Information -InformationAction Continue -MessageData (
+        "[PROCESS] {0}: timeout={1}; terminated={2}; exitCode={3}" -f
+        $Name, $timedOut, $terminated, $exitLabel
+    )
+
     return [PSCustomObject]@{
         timedOut = $timedOut
         terminated = $terminated
@@ -196,8 +218,24 @@ function Assert-CiProcessResult {
         [string]$Name
     )
 
+    if ($null -eq $Result) {
+        throw "$Name returned no process result."
+    }
+
     if ($Result.timedOut) {
         throw "$Name exceeded its time limit."
+    }
+
+    if ($Result.terminated) {
+        throw "$Name was forcibly terminated."
+    }
+
+    if ($null -eq $Result.exitCode) {
+        throw "$Name returned no exit code."
+    }
+
+    if ($Result.exitCode -isnot [int]) {
+        throw "$Name returned an invalid exit code."
     }
 
     if ($Result.exitCode -ne 0) {
@@ -387,6 +425,38 @@ try {
         -Result $recovery `
         -Name "Recovery self-test"
 
+    $stage = "Recovery exit-code self-test"
+
+    $nonZeroResult = Invoke-CiProcess `
+        -Name "recovery-nonzero-self-test" `
+        -Command "exit 7" `
+        -TimeoutSeconds 15
+
+    if (
+        $nonZeroResult.timedOut -or
+        $nonZeroResult.terminated -or
+        $nonZeroResult.exitCode -isnot [int] -or
+        $nonZeroResult.exitCode -ne 7
+    ) {
+        throw "Non-zero exit code was not preserved."
+    }
+
+    try {
+        Assert-CiProcessResult `
+            -Result $nonZeroResult `
+            -Name "Non-zero exit self-test"
+
+        throw "Non-zero exit code was incorrectly accepted."
+    }
+    catch {
+        if (
+            $_.Exception.Message -cne
+            "Non-zero exit self-test failed with exit code 7."
+        ) {
+            throw
+        }
+    }
+
     $recoveryVerified = $true
 
     Write-Output "[RECOVERED] Process execution restored."
@@ -398,7 +468,7 @@ try {
     $installCommand = @'
 $ErrorActionPreference = "Stop"
 & $env:CI_DEPLOY_INSTALLER -NoLaunch
-exit 0
+exit $LASTEXITCODE
 '@
 
     $firstInstall = Invoke-CiProcess `
@@ -585,9 +655,13 @@ catch {
     $failure = @{
         stage = $stage
         errorType = $_.Exception.GetType().Name
+        scriptLine = $_.InvocationInfo.ScriptLineNumber
     }
 
-    Write-Warning "Deployment test failed at stage: $stage"
+    Write-Warning (
+        "Deployment test failed at stage: {0}; type: {1}; line: {2}" -f
+        $failure.stage, $failure.errorType, $failure.scriptLine
+    )
 }
 finally {
 
