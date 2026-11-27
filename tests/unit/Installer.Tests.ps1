@@ -33,11 +33,11 @@ Describe "Windows installer unit tests" {
 
         $requiredFunctions = @(
             "Note",
-            "Refresh-Path",
+            "Update-Path",
             "Find-Exe",
             "Invoke-Checked",
-            "Install-Package",
-            "Ensure-Exe",
+            "Install-WinGetPackage",
+            "Initialize-Executable",
             "Find-Blender",
             "Find-Desktop"
         )
@@ -66,8 +66,6 @@ Describe "Windows installer unit tests" {
                 $matchesFound[0].Extent.Text
             ))
         }
-
-        $log = Join-Path $TestDrive "installer.log"
 
         $cmdPath = Join-Path `
             $env:SystemRoot "System32\cmd.exe"
@@ -175,7 +173,7 @@ Describe "Windows installer unit tests" {
 
                 $env:Path = "$testPath;$originalPath"
 
-                Refresh-Path
+                Update-Path
 
                 ($env:Path -split ";") |
                     Should -Contain $testPath
@@ -196,7 +194,7 @@ Describe "Windows installer unit tests" {
 
                 $env:Path = "$testPath;$testPath"
 
-                Refresh-Path
+                Update-Path
 
                 $entries = @(
                     $env:Path -split ";" |
@@ -217,6 +215,8 @@ Describe "Windows installer unit tests" {
     Context "Logging" {
 
         It "Writes the installer message to its log" {
+
+            $log = Join-Path $TestDrive "installer.log"
 
             $message = (
                 "CI unit test " +
@@ -240,7 +240,7 @@ Describe "Windows installer unit tests" {
 
             Mock Note {}
 
-            Mock Refresh-Path {}
+            Mock Update-Path {}
 
             Mock Invoke-Checked {}
         }
@@ -251,7 +251,7 @@ Describe "Windows installer unit tests" {
                 "C:\CI\winget.exe"
             }
 
-            Install-Package "Git.Git"
+            Install-WinGetPackage "Git.Git"
 
             Should -Invoke Invoke-Checked `
                 -Exactly `
@@ -274,9 +274,9 @@ Describe "Windows installer unit tests" {
                 "C:\CI\winget.exe"
             }
 
-            Install-Package "Git.Git"
+            Install-WinGetPackage "Git.Git"
 
-            Should -Invoke Refresh-Path `
+            Should -Invoke Update-Path `
                 -Exactly `
                 -Times 1 `
                 -Scope It
@@ -287,7 +287,7 @@ Describe "Windows installer unit tests" {
             Mock Find-Exe {}
 
             {
-                Install-Package "Git.Git"
+                Install-WinGetPackage "Git.Git"
             } | Should -Throw "*WinGet absent*"
 
             Should -Invoke Invoke-Checked `
@@ -307,10 +307,10 @@ Describe "Windows installer unit tests" {
             }
 
             {
-                Install-Package "Git.Git"
+                Install-WinGetPackage "Git.Git"
             } | Should -Throw "*Simulated installation failure*"
 
-            Should -Invoke Refresh-Path `
+            Should -Invoke Update-Path `
                 -Exactly `
                 -Times 0 `
                 -Scope It
@@ -326,7 +326,7 @@ Describe "Windows installer unit tests" {
 
             Mock Note {}
 
-            Mock Install-Package {}
+            Mock Install-WinGetPackage {}
         }
 
         AfterEach {
@@ -339,9 +339,9 @@ Describe "Windows installer unit tests" {
                 "C:\CI\git.exe"
             }
 
-            Ensure-Exe "git.exe" "Git.Git"
+            Initialize-Executable "git.exe" "Git.Git"
 
-            Should -Invoke Install-Package `
+            Should -Invoke Install-WinGetPackage `
                 -Exactly `
                 -Times 0 `
                 -Scope It
@@ -356,13 +356,13 @@ Describe "Windows installer unit tests" {
                 }
             }
 
-            Mock Install-Package {
+            Mock Install-WinGetPackage {
                 $script:ciUnitInstalled = $true
             }
 
-            Ensure-Exe "git.exe" "Git.Git"
+            Initialize-Executable "git.exe" "Git.Git"
 
-            Should -Invoke Install-Package `
+            Should -Invoke Install-WinGetPackage `
                 -Exactly `
                 -Times 1 `
                 -Scope It `
@@ -376,10 +376,10 @@ Describe "Windows installer unit tests" {
             Mock Find-Exe {}
 
             {
-                Ensure-Exe "git.exe" "Git.Git"
+                Initialize-Executable "git.exe" "Git.Git"
             } | Should -Throw "*git.exe introuvable*"
 
-            Should -Invoke Install-Package `
+            Should -Invoke Install-WinGetPackage `
                 -Exactly `
                 -Times 1 `
                 -Scope It

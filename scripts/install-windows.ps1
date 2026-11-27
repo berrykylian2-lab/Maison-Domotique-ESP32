@@ -5,10 +5,10 @@ $ErrorActionPreference = 'Stop'
 $log = Join-Path $env:LOCALAPPDATA 'BlenderCodexSetup\setup.log'
 New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
 function Note([string]$message) {
-    Write-Host $message
+    Write-Information -MessageData $message -InformationAction Continue
     Add-Content -LiteralPath $log -Value ("{0:u} {1}" -f (Get-Date), $message)
 }
-function Refresh-Path {
+function Update-Path {
     $paths = @($env:Path, [Environment]::GetEnvironmentVariable('Path','Machine'),
         [Environment]::GetEnvironmentVariable('Path','User'),
         "$env:LOCALAPPDATA\Microsoft\WinGet\Links", "$HOME\.local\bin",
@@ -23,15 +23,15 @@ function Invoke-Checked([string]$exe, [string[]]$arguments) {
     & $exe @arguments
     if ($LASTEXITCODE -ne 0) { throw "Echec de $exe (code $LASTEXITCODE)." }
 }
-function Install-Package([string]$id) {
+function Install-WinGetPackage([string]$id) {
     $winget = Find-Exe 'winget.exe'
     if (-not $winget) { throw "WinGet absent. Demander son installation autorisee." }
     Note "Installation : $id"
     Invoke-Checked $winget @('install','--id',$id,'--exact','--source','winget')
-    Refresh-Path
+    Update-Path
 }
-function Ensure-Exe([string]$name,[string]$id) {
-    if (-not (Find-Exe $name)) { Install-Package $id }
+function Initialize-Executable([string]$name,[string]$id) {
+    if (-not (Find-Exe $name)) { Install-WinGetPackage $id }
     if (-not (Find-Exe $name)) { throw "$name introuvable. Relancer apres installation ou verifier le PATH." }
     Note "$name : disponible"
 }
@@ -53,13 +53,13 @@ function Find-Desktop {
 }
 try {
     Note '=== Installation Windows (v0.1, prototype) ==='
-    Refresh-Path
+    Update-Path
     $blender = Find-Blender
-    if (-not $blender) { Install-Package 'BlenderFoundation.Blender'; $blender = Find-Blender }
+    if (-not $blender) { Install-WinGetPackage 'BlenderFoundation.Blender'; $blender = Find-Blender }
     if (-not $blender) { throw 'Blender introuvable apres installation.' }
     Note 'Blender : disponible'
-    Ensure-Exe 'git.exe' 'Git.Git'
-    Ensure-Exe 'uv.exe' 'astral-sh.uv'
+    Initialize-Executable 'git.exe' 'Git.Git'
+    Initialize-Executable 'uv.exe' 'astral-sh.uv'
     $uv = Find-Exe 'uv.exe'
     $uvx = Find-Exe 'uvx.exe'
     if (-not $uvx) { throw 'UVX introuvable.' }
@@ -71,9 +71,9 @@ try {
     if (-not $codex) { $codex = Find-Exe 'codex.cmd' }
     if (-not $desktop -and -not $codex) {
         # CLI fallback when the desktop application is absent.
-        Ensure-Exe 'npm.cmd' 'OpenJS.NodeJS.LTS'
+        Initialize-Executable 'npm.cmd' 'OpenJS.NodeJS.LTS'
         Invoke-Checked (Find-Exe 'npm.cmd') @('install','-g','@openai/codex')
-        Refresh-Path
+        Update-Path
         $codex = Find-Exe 'codex.exe'
         if (-not $codex) { $codex = Find-Exe 'codex.cmd' }
         if (-not $codex) { throw 'Codex CLI introuvable apres installation.' }
