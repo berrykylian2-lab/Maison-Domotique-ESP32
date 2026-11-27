@@ -18,7 +18,31 @@ param(
     [int]$MaxAttempts = 3
 )
 
-Describe "Windows deployment integration" {
+Describe "Windows deployment integration" -ForEach @(
+    @{
+        CandidateJson = $CandidateJson
+        ConfigPath = $ConfigPath
+        EvidencePath = $EvidencePath
+        RepositoryRoot = $RepositoryRoot
+        McpTimeoutSeconds = $McpTimeoutSeconds
+        MaxAttempts = $MaxAttempts
+
+        state = @{
+            versions = @{}
+            paths = @{}
+            configurationVerified = $false
+            codexConfigurationVerified = $false
+            addonActive = $false
+            mcpReadOnlyVerified = $false
+            reconnectionVerified = $false
+            launcherVerified = $false
+            checks = @{}
+            originalPath = $null
+            originalOffline = $null
+            environmentCaptured = $false
+        }
+    }
+) {
 
     BeforeAll {
 
@@ -67,20 +91,9 @@ Describe "Windows deployment integration" {
             }
         }
 
-        $state = @{
-            versions = @{}
-            paths = @{}
-            configurationVerified = $false
-            codexConfigurationVerified = $false
-            addonActive = $false
-            mcpReadOnlyVerified = $false
-            reconnectionVerified = $false
-            launcherVerified = $false
-            checks = @{}
-        }
-
-        $originalPath = $env:Path
-        $originalOffline = $env:UV_OFFLINE
+        $state.originalPath = $env:Path
+        $state.originalOffline = $env:UV_OFFLINE
+        $state.environmentCaptured = $true
 
         # Refresh PATH after installation in separate processes.
 
@@ -990,13 +1003,15 @@ if __name__ == "__main__":
         }
         finally {
 
-            $env:Path = $originalPath
+            if ($state.environmentCaptured) {
+                $env:Path = $state.originalPath
 
-            [Environment]::SetEnvironmentVariable(
-                "UV_OFFLINE",
-                $originalOffline,
-                "Process"
-            )
+                [Environment]::SetEnvironmentVariable(
+                    "UV_OFFLINE",
+                    $state.originalOffline,
+                    "Process"
+                )
+            }
         }
     }
 }
