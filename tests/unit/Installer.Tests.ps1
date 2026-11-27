@@ -45,9 +45,7 @@ Describe "Windows installer unit tests" {
         $definitions = @(
             $installerAst.EndBlock.Statements |
                 Where-Object {
-                    $_ -is [
-                        System.Management.Automation.Language.FunctionDefinitionAst
-                    ]
+                    $_ -is [System.Management.Automation.Language.FunctionDefinitionAst]
                 }
         )
 
