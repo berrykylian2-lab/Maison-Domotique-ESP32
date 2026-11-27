@@ -206,6 +206,10 @@ jobs:
           - powershell
           - pwsh
 
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -214,12 +218,10 @@ jobs:
           persist-credentials: false
 
       - name: Display PowerShell version
-        shell: ${{ matrix.shell }}
         run: |
           $PSVersionTable
 
       - name: Verify repository integrity
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -250,7 +252,6 @@ jobs:
           }
 
       - name: Validate PowerShell syntax
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -289,7 +290,6 @@ jobs:
           key: windows-2025-${{ matrix.shell }}-tools-${{ hashFiles('ci/tools.lock.json') }}
 
       - name: Prepare and verify testing tools
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -298,7 +298,6 @@ jobs:
             -LockFile "ci/tools.lock.json"
 
       - name: Analyze PowerShell code
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -353,7 +352,6 @@ jobs:
           }
 
       - name: Run unit tests
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -417,7 +415,6 @@ jobs:
 
       - name: Generate validation status report
         if: always()
-        shell: ${{ matrix.shell }}
         env:
           JOB_STATUS: ${{ job.status }}
         run: |
